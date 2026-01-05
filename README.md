@@ -385,7 +385,7 @@ in
 
 ### Step 3: Post-Install
 
-From here, you'll need to rebuild your configuration
+From here, you'll need to rebuild your configuration.
 
 ```nix
 sudo nixos-rebuild switch
@@ -394,3 +394,7 @@ sudo nixos-rebuild switch
 Changes should apply, you can reboot if necessary.
 
 **Feel free to see my [configuration](/my-configuration/) to see how I did all this!**
+
+### Step 4: Post-Post-Install
+
+Also you need to install `pavucontrol` and switch to the "Pro Audio" mode using it.
