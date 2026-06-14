@@ -57,26 +57,37 @@ Build the package in `chrome-device.nix` and setup Keyd
 { config, pkgs, lib, ... }:
 
 let
-  cb-ucm-conf = with pkgs; alsa-ucm-conf.overrideAttrs {
-    wttsrc = fetchFromGitHub {
+  cb-ucm-conf = pkgs.alsa-ucm-conf.overrideAttrs (old: {
+    src = pkgs.fetchFromGitHub {
       owner = "WeirdTreeThing";
       repo = "alsa-ucm-conf-cros";
-      rev = "6b395ae73ac63407d8a9892fe1290f191eb0315b";
-      hash = "sha256-GHrK85DmiYF6FhEJlYJWy6aP9wtHFKkTohqt114TluI=";
+      rev = "a4e92135fd49e669b5ce096439289e05e25ae90c";
+      hash = "sha256-3TpzjmWuOn8+eIdj0BUQk2TeAU7BzPBi3FxAmZ3zkN8=";
     };
-    unpackPhase = ''
-      runHook preUnpack
-      tar xf "$src"
-      runHook postUnpack
-    '';
+
+    patches = [ ]; # TODO: Is it legal to clear the patches?
 
     installPhase = ''
       runHook preInstall
-      mkdir -p $out/share/alsa
-      cp -r alsa-ucm*/ucm2 $out/share/alsa
+
+      mkdir -p $out/share/alsa/ucm2
+      # Start with everything from the standard package
+      cp -r ${pkgs.alsa-ucm-conf}/share/alsa/ucm2/* $out/share/alsa/ucm2/
+      # Our $out is writable but the copied files inherit read-only permissions, fix that
+      chmod -R u+w $out/share/alsa/ucm2
+
+      # Overlay WeirdTreeThing files on top
+      cp -r ucm2/* $out/share/alsa/ucm2/
+
+      # Add name variant copies
+      cp -r ucm2/conf.d/sof-rt5682 $out/share/alsa/ucm2/conf.d/sofrt5682
+      cp -r ucm2/conf.d/sof-rt5682 $out/share/alsa/ucm2/conf.d/tgl_rt5682_def
+      cp ucm2/conf.d/sof-rt5682/sof-rt5682.conf $out/share/alsa/ucm2/conf.d/sof-rt5682/Google-Voxel-rev3.conf
+      cp ucm2/conf.d/sof-rt5682/sof-rt5682.conf $out/share/alsa/ucm2/conf.d/tgl_rt5682_def/Google-Voxel-rev3.conf
+
       runHook postInstall
     '';
-  }; 
+  });
 in
 {
     services.keyd = {
@@ -168,12 +179,11 @@ in
   environment = {
     systemPackages = [ pkgs.sof-firmware ];
     sessionVariables.ALSA_CONFIG_UCM2 = "${cb-ucm-conf}/share/alsa/ucm2";
-    # AUDIO SETUP FOR < 23.11 AND UNSTABLE
   };
 
-  # AUDIO SETUP FOR > 24.05
+  # AUDIO SETUP (only tested with unstable)
 
-  system.replaceRuntimeDependencies = [
+  system.replaceDependencies.replacements = [
     ({
       original = pkgs.alsa-ucm-conf;
       replacement = cb-ucm-conf;
@@ -182,8 +192,6 @@ in
 }
 
 ```
-
-The rest of this process varies between AVS and SOF. Pay attention to the `# AUDIO SETUP FOR...` comment(for your NixOS version), this will be replaced later in configuration.
 
 #### Step 2A: Determine versions
 
@@ -195,135 +203,40 @@ nix-channel --list
 
 CPU generations to determine AVS or SOF for your Chromebook
 
-| AVS             | SOF             |
-| --------------- | --------------- |
-| Skylake         | Alderlake       |
-| Kabylake        | Jasperlake      |
-| Apollolake      | Tigerlake       |
-|                 | Cometlake       |
-|                 | Geminilake      |
-|                 | Braswell        |
-|                 | Baytrail        |
+| AVS        | SOF        |
+| ---------- | ---------- |
+| Skylake    | Alderlake  |
+| Kabylake   | Jasperlake |
+| Apollolake | Tigerlake  |
+|            | Cometlake  |
+|            | Geminilake |
+|            | Braswell   |
+|            | Baytrail   |
 
-If your CPU generation isn't listed, please make a pull request!
+**This fork of the guide is only for SOF.**
 
 #### Step 2B: Configuration based on Step 2A
 
 **SOF Configuration:**
 
-> Depending on your NixOS verion, replace **one** of the comments in `chrome-device.nix`.
-
-Replace `# AUDIO SETUP FOR < 23.11 AND UNSTABLE` with this if this comment applies to your NixOS version!
+Replace `# AUDIO SETUP (only tested with unstable)` with this:
 
 ```nix
 # chrome-device.nix
-# for 23.11 and unstable
-etc = {
-  "wireplumber/main.lua.d/51-increase-headroom.lua".text = ''
-      rule = {
-        matches = {
-          {
-            { "node.name", "matches", "alsa_output.*" },
-          },
-        },
-        apply_properties = {
-          ["api.alsa.headroom"] = 4096,
-        },
+services.pipewire.wireplumber.extraConfig = {
+  "51-alsa-headroom" = {
+    "monitor.alsa.rules" = [
+      {
+        matches = [ { "node.name" = "~alsa_output.*"; } ];
+        actions = {
+          update-props = {
+            "api.alsa.headroom" = 4096;
+          };
+        };
       }
-
-    table.insert(alsa_monitor.rules,rule)
-  '';
+    ];
+  };
 };
-
-```
-
-Replace `# AUDIO SETUP FOR > 24.05` with this if this comment applies to your NixOS version!
-
-```nix
-# chrome-device.nix
-in 
-{
-  # additonal configuration...
-
-  # for 24.05
-  services.pipewire.wireplumber.configPackages = [
-    (pkgs.writeTextDir "share/wireplumber/main.lua.d/51-increase-headroom.lua" ''
-      rule = {
-        matches = {
-          {
-            { "node.name", "matches", "alsa_output.*" },
-          },
-        },
-        apply_properties = {
-          ["api.alsa.headroom"] = 4096,
-        },
-      }
-
-      table.insert(alsa_monitor.rules,rule)
-    '')
-  ];
-
-  # additonal configuration...
-}
-
-```
-
-**AVS Configuration:**
-
-> Depending on your NixOS verion, replace **one** of the comments in `chrome-device.nix`.
-
-Replace `# AUDIO SETUP FOR < 23.11 AND UNSTABLE` with this if this comment applies to your NixOS version!
-
-```nix
-# chrome-device.nix
-# for 23.11 and unstable
-etc = {
-  "wireplumber/main.lua.d/51-avs-dmic.lua".text = ''
-    rule = {
-      matches = {
-        {
-          { "node.nick", "equals", "Internal Microphone" },
-        },
-      },
-      apply_properties = {
-        ["audio.format"] = "S16LE",
-      },
-    }
-
-    table.insert(alsa_monitor.rules, rule)
-  '';
-};
-
-```
-
-Replace `# AUDIO SETUP FOR > 24.05` with this if this comment applies to your NixOS version!
-
-```nix
-# chrome-device.nix
-in 
-{
-  # additonal configuration...
-
-  # for 24.05
-  services.pipewire.wireplumber.configPackages = [
-    (pkgs.writeTextDir "share/wireplumber/main.lua.d/51-avs-dmic.lua" ''
-      rule = {
-        matches = {
-          {
-            { "node.nick", "equals", "Internal Microphone" },
-          },
-        },
-        apply_properties = {
-          ["audio.format"] = "S16LE",
-        },
-      }
-
-      table.insert(alsa_monitor.rules, rule)
-    '')
-  ];
-
-  # additonal configuration...
-}
 
 ```
 
@@ -366,23 +279,6 @@ in
 
 ```
 
-**AVS** modprobe config for **Skylake, Kabylake, and Apollolake**
-
-```nix
-# chrome-device.nix
-in
-{
-  boot = {
-    extraModprobeConfig = ''
-      options snd-intel-dspcfg dsp_driver=4
-    '';
-  };
-
-  # additonal configuration...
-}
-
-```
-
 ### Step 3: Post-Install
 
 From here, you'll need to rebuild your configuration.
@@ -397,4 +293,4 @@ Changes should apply, you can reboot if necessary.
 
 ### Step 4: Post-Post-Install
 
-Also you need to install `pavucontrol` and switch to the "Pro Audio" mode using it.
+Also you need to install `pavucontrol` and switch to the "Pro Audio" mode using it. Results in better audio quality (likely because it is able to use more of the speakers?).
